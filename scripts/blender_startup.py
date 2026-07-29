@@ -44,7 +44,27 @@ def create_facebuilder_head_and_load_images(image_paths: list[str]) -> None:
           "See blender_startup.py header for how to find the real operator IDs.")
 
 
+def inspect_operator(idname: str) -> None:
+    """Prints every parameter a bpy.ops operator accepts, by name."""
+    try:
+        parts = idname.split(".")
+        op = getattr(getattr(bpy.ops, parts[0]), parts[1])
+        rna = op.get_rna_type()
+        print(f"[person2meta] Parameters for {idname}:")
+        for prop in rna.properties:
+            if prop.identifier == "rna_type":
+                continue
+            print(f"    - {prop.identifier} ({prop.type})")
+    except Exception as e:
+        print(f"[person2meta] Could not inspect {idname}: {e}")
+
+
 def main():
+    # TEMPORARY: run this once to discover the real parameter names,
+    # then remove these two lines once we've confirmed them.
+    inspect_operator("keentools_fb.add_head")
+    inspect_operator("keentools_fb.open_multiple_filebrowser_exec")
+
     image_paths = get_image_paths()
     create_facebuilder_head_and_load_images(image_paths)
 

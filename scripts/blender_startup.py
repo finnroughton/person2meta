@@ -59,13 +59,41 @@ def inspect_operator(idname: str) -> None:
         print(f"[person2meta] Could not inspect {idname}: {e}")
 
 
-def main():
-    # TEMPORARY: run this once to discover the real parameter names,
-    # then remove these two lines once we've confirmed them.
-    inspect_operator("keentools_fb.add_head")
-    inspect_operator("keentools_fb.open_multiple_filebrowser_exec")
+def test_direct_file_args(image_paths: list[str]) -> None:
+    """
+    TEMPORARY TEST — tries calling open_multiple_filebrowser_exec with
+    directory/files kwargs directly, to see whether it silently accepts
+    them (even though they didn't show up via introspection) or errors.
+    """
+    if not image_paths:
+        print("[person2meta] No images to test with.")
+        return
 
+    directory = os.path.dirname(image_paths[0]) + os.sep
+    files = [{"name": os.path.basename(p)} for p in image_paths]
+
+    print(f"[person2meta] TEST: calling open_multiple_filebrowser_exec "
+          f"with directory={directory!r} and {len(files)} file(s)...")
+    try:
+        result = bpy.ops.keentools_fb.open_multiple_filebrowser_exec(
+            headnum=0, directory=directory, files=files
+        )
+        print(f"[person2meta] TEST call SUCCEEDED, result: {result}")
+    except TypeError as e:
+        print(f"[person2meta] TEST call FAILED with TypeError (this tells us "
+              f"those kwargs genuinely don't exist): {e}")
+    except Exception as e:
+        print(f"[person2meta] TEST call FAILED with a different error: {e}")
+
+
+def main():
     image_paths = get_image_paths()
+
+    # TEMPORARY: run this once to see if direct file args work at all,
+    # then remove this line once we've confirmed the answer either way.
+    bpy.ops.keentools_fb.add_head()
+    test_direct_file_args(image_paths)
+
     create_facebuilder_head_and_load_images(image_paths)
 
 

@@ -13,7 +13,7 @@ from tkinter import filedialog
 from pathlib import Path
 
 # ---- CONFIG: edit these two paths for your machine ----
-BLENDER_EXE = r"C:\Program Files\Blender Foundation\Blender 4.2\blender.exe"  # adjust to your install
+BLENDER_EXE = r"C:\Program Files\Blender Foundation\Blender 5.2\blender-launcher.exe"  # adjust to your install
 STARTUP_SCRIPT = str(Path(__file__).parent / "blender_startup.py")
 # --------------------------------------------------------
 
@@ -56,7 +56,7 @@ def launch_blender_with_images(image_paths: list[str]) -> None:
 
     subprocess.Popen(
         [
-            "C:\Program Files\Blender Foundation\Blender 5.2\blender-launcher.exe",
+            BLENDER_EXE,
             "--python", STARTUP_SCRIPT,
         ],
         env=env,

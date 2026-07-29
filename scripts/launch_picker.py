@@ -56,7 +56,7 @@ def launch_blender_with_images(image_paths: list[str]) -> None:
 
     subprocess.Popen(
         [
-            BLENDER_EXE,
+            "C:\Program Files\Blender Foundation\Blender 5.2\blender-launcher.exe",
             "--python", STARTUP_SCRIPT,
         ],
         env=env,

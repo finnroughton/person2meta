@@ -35,9 +35,33 @@ response = requests.post(
     json={"image_count": IMAGE_COUNT},
 )
 
-print(f"[person2meta] Status code: {response.status_code}")
+print("[person2meta] Status code:", response.status_code)
+data = response.json()
 print("[person2meta] Raw response body:")
-try:
-    print(json.dumps(response.json(), indent=2))
-except ValueError:
-    print(response.text)
+print(json.dumps(data, indent=2))
+
+# --- Step 2: upload the actual image files to the returned URLs ---
+# EDIT these two paths to point at 2 real test images on your machine.
+LOCAL_IMAGE_PATHS = [
+    r"C:\path\to\your\first_test_image.png",
+    r"C:\path\to\your\second_test_image.png",
+]
+
+avatar_id = data["avatar_id"]
+img_urls = data["img_urls"]
+
+if len(LOCAL_IMAGE_PATHS) != len(img_urls):
+    print(f"[person2meta] Mismatch: {len(LOCAL_IMAGE_PATHS)} local paths but "
+          f"{len(img_urls)} upload URLs. Fix LOCAL_IMAGE_PATHS above.")
+    raise SystemExit(1)
+
+for local_path, url in zip(LOCAL_IMAGE_PATHS, img_urls):
+    with open(local_path, "rb") as f:
+        image_bytes = f.read()
+    put_response = requests.put(url, data=image_bytes)
+    print(f"[person2meta] Uploaded {local_path} -> status {put_response.status_code}")
+
+print(f"[person2meta] Done. avatar_id = {avatar_id}")
+print("[person2meta] STOPPING HERE ON PURPOSE — not calling /process yet. "
+      "Check your credit balance on the KeenTools dashboard before we proceed "
+      "to confirm upload alone didn't spend anything.")

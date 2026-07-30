@@ -3,7 +3,7 @@ person2meta - convert an OBJ to FBX for Unreal import
 Called automatically by run_pipeline.py -- you shouldn't need to run this
 directly, but if you do:
 
-    "C:\\Program Files\\Blender Foundation\\Blender 5.2\\blender.exe" --background --python convert_obj_to_fbx.py -- INPUT.obj OUTPUT.fbx
+    & "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" --background --python convert_obj_to_fbx.py -- "C:\Users\BrianBurritt\Downloads\New Folder\celeb\celeb\natalie\neutral.obj" "C:\Users\BrianBurritt\Downloads\New Folder\celeb\celeb\natalie\natalie_head.fbx"
 """
 
 import sys

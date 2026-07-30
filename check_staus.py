@@ -21,7 +21,7 @@ if not API_KEY:
 
 # Paste in an avatar_id from a previous init call (even one you haven't
 # processed yet -- we just want to see what get-status says about it).
-AVATAR_ID = "PASTE_AN_AVATAR_ID_HERE"
+AVATAR_ID = "019fb3ba-68e2-7691-98c5-4c20e3474114"
 
 resp = requests.get(
     f"{BASE_URL}/v1/avatar/{AVATAR_ID}/get-status",

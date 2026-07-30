@@ -27,7 +27,7 @@ IMAGE_COUNT = 2  # just testing with 2 for now to conserve trial heads
 # -------------------------------------------------------------
 
 response = requests.post(
-    "https://api.cloud.keentools.io/v1/avatar/init",
+    "https://api.keentools.workers.dev/v1/avatar/init",
     headers={
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json",

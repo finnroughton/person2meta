@@ -1,0 +1,9 @@
+{
+  "head_name": "natalie",
+  "fbx_path": "C:\\Users\\BrianBurritt\\Downloads\\New Folder\\celeb\\celeb\\natalie\\natalie_head.fbx",
+  "portrait_path": "C:\\Users\\BrianBurritt\\Downloads\\New Folder\\celeb\\celeb\\natalie\\natalie1.png",
+  "import_destination_path": "/Game/person2meta",
+  "imported_mesh_name": "SM_natalie",
+  "output_package_path": "/Game/person2meta",
+  "output_asset_name": "MHC_natalie"
+}

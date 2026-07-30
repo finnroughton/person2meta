@@ -46,10 +46,25 @@ def import_fbx_as_static_mesh(fbx_path: str, destination_path: str, asset_name: 
     task.options = options
 
     unreal.AssetToolsHelpers.get_asset_tools().import_asset_tasks([task])
-    imported_objects = task.get_editor_property("imported_object_paths")
-    if not imported_objects:
-        raise RuntimeError(f"FBX import produced no objects: {fbx_path}")
-    return unreal.load_asset(imported_objects[0])
+
+    # Don't guess from imported_object_paths -- an FBX import creates several
+    # sub-assets (textures, materials, etc.) and their order isn't reliable.
+    # Load the actual static mesh directly by the exact name we requested.
+    expected_path = f"{destination_path}/{asset_name}"
+    mesh_asset = unreal.load_asset(expected_path)
+    if mesh_asset is None:
+        raise RuntimeError(
+            f"Import ran, but no asset found at {expected_path}. "
+            f"Check the FBX actually contains a mesh named '{asset_name}', "
+            f"or inspect task.get_editor_property('imported_object_paths') "
+            f"to see what was actually created."
+        )
+    if not isinstance(mesh_asset, unreal.StaticMesh):
+        raise RuntimeError(
+            f"Asset at {expected_path} exists but is a {type(mesh_asset).__name__}, "
+            f"not a StaticMesh. Something about the import produced the wrong asset type."
+        )
+    return mesh_asset
 
 
 def main():
@@ -121,10 +136,9 @@ def main():
     try:
         print("[person2meta] Assembling conform parameters...")
         conform_params = unreal.ConformTargetParams()
-        conform_params.conform_target_mesh.target_parts_type = unreal.TargetPartsType.COMBINED
-        conform_params.conform_target_mesh.body_vertices = body_vertices
-        conform_params.conform_target_mesh.body_vertex_indices = body_indices
-        conform_params.estimate_body_joints_from_mesh = True
+        conform_params.conform_target_mesh.target_parts_type = unreal.TargetPartsType.HEAD_ONLY
+        conform_params.conform_target_mesh.head_vertices = body_vertices
+        conform_params.conform_target_mesh.head_vertex_indices = body_indices
         conform_params.auto_solve = True
         conform_params.body_conform_solve_settings.pipeline_name = "combined"
 
@@ -139,7 +153,7 @@ def main():
         conform_params.image_size = image_size
 
         target_mesh_key = unreal.MetaHumanCharacterTargetMeshKey()
-        target_mesh_key.combined_mesh = target_mesh
+        target_mesh_key.head_mesh = target_mesh
 
         print(f"[person2meta] Running conform ({len(curve_tracking)} face curves)...")
         if not metahuman_subsystem.conform_to_target_meshes(character, target_mesh_key, conform_params):
@@ -159,5 +173,7 @@ def main():
             )
 
 
+if __name__ == "__main__":
+    main()
 if __name__ == "__main__":
     main()

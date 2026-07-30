@@ -142,15 +142,22 @@ def main():
         conform_params.auto_solve = True
         conform_params.body_conform_solve_settings.pipeline_name = "combined"
 
-        view_info = unreal.MinimalViewInfo()
-        view_info.location = CAMERA_LOCATION
-        view_info.rotation = CAMERA_ROTATION
-        view_info.fov = CAMERA_FOV_DEG
-        view_info.aspect_ratio = float(image_size.x) / float(image_size.y)
-        view_info.projection_mode = unreal.CameraProjectionMode.PERSPECTIVE
-        conform_params.curve_tracking_points = curve_tracking
-        conform_params.camera_view_info = view_info
-        conform_params.image_size = image_size
+        # TEMPORARY DIAGNOSTIC: camera/landmark term commented out to test
+        # whether the guessed camera parameters are causing the distortion.
+        # If this produces a reasonable (if imperfect) head shape, that
+        # confirms the camera guess -- not the vertex data -- was the problem.
+        #
+        # view_info = unreal.MinimalViewInfo()
+        # view_info.location = CAMERA_LOCATION
+        # view_info.rotation = CAMERA_ROTATION
+        # view_info.fov = CAMERA_FOV_DEG
+        # view_info.aspect_ratio = float(image_size.x) / float(image_size.y)
+        # view_info.projection_mode = unreal.CameraProjectionMode.PERSPECTIVE
+        # conform_params.curve_tracking_points = curve_tracking
+        # conform_params.camera_view_info = view_info
+        # conform_params.image_size = image_size
+        print("[person2meta] DIAGNOSTIC MODE: skipping camera/landmark term, "
+              "vertex-only fit.")
 
         target_mesh_key = unreal.MetaHumanCharacterTargetMeshKey()
         target_mesh_key.head_mesh = target_mesh
@@ -175,5 +182,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-if __name__ == "__main__":
     main()

@@ -251,6 +251,21 @@ manual test runs:
   execution may itself interact differently with the Epic Cloud login flow
   needed for later steps (untested).
 
+**Reproducibility confirmed**: `person2meta_conform_log.txt` (the file-logging
+safety net added alongside the scale fix) shows three separate clean runs,
+all completing successfully in a consistent ~45 seconds for the actual
+conform step, no freezing, no errors:
+```
+10:44:50 [person2meta] Running conform (16 face curves)...
+10:45:36 [person2meta] Conform complete -- saved /Game/person2meta/MHC_natalie
+10:47:24 [person2meta] Running conform (16 face curves)...
+10:48:07 [person2meta] Conform complete -- saved /Game/person2meta/MHC_natalie
+10:54:34 [person2meta] Running conform (16 face curves)...
+10:55:17 [person2meta] Conform complete -- saved /Game/person2meta/MHC_natalie
+```
+This is a reliable, reproducible bug -- not an intermittent one -- which
+should make it more tractable to debug.
+
 ## Environment
 - Unreal Engine 5.8 (project was originally created in 5.7, then switched
   via "Switch Unreal Engine version..." -- worth double-checking nothing
@@ -260,6 +275,9 @@ manual test runs:
   its own reconstruction features
 - KeenTools Cloud API, trial account (credits are limited -- be careful
   about any fix that requires re-running the full KeenTools reconstruction,
+  since that spends real trial credits; prefer testing against the already-
+  downloaded FBX/OBJ where possible)
+- Windows 11, PowerShell
   since that spends real trial credits; prefer testing against the already-
   downloaded FBX/OBJ where possible)
 - Windows 11, PowerShell

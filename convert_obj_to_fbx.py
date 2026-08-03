@@ -65,11 +65,25 @@ if not bpy.context.scene.objects:
 imported_count = len(bpy.context.scene.objects)
 print(f"[person2meta] Imported {imported_count} object(s) from OBJ.")
 
+# --- Bake any object-level transform (scale/rotation from the OBJ import)
+# into the actual vertex data, so it can't interact unpredictably with the
+# FBX export's own scale/axis settings below. ---
+try:
+    bpy.ops.object.select_all(action='SELECT')
+    bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
+except Exception as e:
+    fail(f"Failed to apply object transforms before export: {e}")
+
 # --- Export ---
 try:
     bpy.ops.export_scene.fbx(
         filepath=OUTPUT_FBX_PATH,
         use_selection=False,  # export everything in the scene
+        global_scale=1.0,
+        apply_unit_scale=True,
+        apply_scale_options='FBX_SCALE_ALL',  # bakes any object scale into the actual vertex data
+        axis_forward='-Z',  # standard Blender->Unreal convention
+        axis_up='Y',        # standard Blender->Unreal convention
     )
 except Exception as e:
     fail(f"Failed to export FBX to '{OUTPUT_FBX_PATH}': {e}")

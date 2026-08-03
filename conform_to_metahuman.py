@@ -19,11 +19,25 @@ Two honest caveats carried over from the original example:
 
 import json
 import os
+import time
 import unreal
 
 # ---- EDIT ONCE: where run_pipeline.py wrote the config ----
 CONFIG_PATH = r"C:\Users\BrianBurritt\Downloads\person2meta_config.json"
 # --------------------------------------------------------------
+
+LOG_FILE_PATH = os.path.join(os.path.dirname(CONFIG_PATH), "person2meta_conform_log.txt")
+
+
+def log(message: str) -> None:
+    """Prints to the console AND appends to a file, so progress survives
+    even if the editor freezes and has to be force-quit."""
+    print(message)
+    try:
+        with open(LOG_FILE_PATH, "a") as f:
+            f.write(f"{time.strftime('%H:%M:%S')} {message}\n")
+    except OSError:
+        pass  # don't let logging failures break the actual script
 
 # Rough guess for a typical front-facing portrait -- not a measured value.
 CAMERA_LOCATION = unreal.Vector(0.0, 100.0, 165.0)
@@ -87,13 +101,13 @@ def main():
         unreal.MetaHumanCharacterEditorSubsystem
     )
 
-    print(f"[person2meta] Importing FBX for '{config['head_name']}'...")
+    log(f"[person2meta] Importing FBX for '{config['head_name']}'...")
     target_mesh = import_fbx_as_static_mesh(
         fbx_path, import_destination_path, imported_mesh_name
     )
-    print(f"[person2meta] Imported mesh: {target_mesh.get_path_name()}")
+    log(f"[person2meta] Imported mesh: {target_mesh.get_path_name()}")
 
-    print("[person2meta] Loading portrait and running face landmark detection...")
+    log("[person2meta] Loading portrait and running face landmark detection...")
     image_size, pixels = unreal.PromotedFrameUtils.get_promoted_frame_as_pixel_array_from_disk(
         portrait_path
     )
@@ -111,13 +125,13 @@ def main():
             "No face landmarks detected. Try a clearer, well-lit, "
             "front-facing photo with eyes open."
         )
-    print(f"[person2meta] Detected {len(curve_tracking)} contour curves.")
+    log(f"[person2meta] Detected {len(curve_tracking)} contour curves.")
 
-    print("[person2meta] Extracting target mesh topology...")
+    log("[person2meta] Extracting target mesh topology...")
     body_vertices, body_indices, *_ = metahuman_subsystem.get_mesh_data_for_conforming(target_mesh)
-    print(f"[person2meta] Target mesh: {len(body_vertices)} verts, {len(body_indices) // 3} tris")
+    log(f"[person2meta] Target mesh: {len(body_vertices)} verts, {len(body_indices) // 3} tris")
 
-    print("[person2meta] Creating MetaHumanCharacter asset...")
+    log("[person2meta] Creating MetaHumanCharacter asset...")
     asset_tools = unreal.AssetToolsHelpers.get_asset_tools()
     asset_path = f"{output_package_path}/{output_asset_name}"
     character = asset_tools.create_asset(
@@ -134,7 +148,7 @@ def main():
 
     conform_succeeded = False
     try:
-        print("[person2meta] Assembling conform parameters...")
+        log("[person2meta] Assembling conform parameters...")
         conform_params = unreal.ConformTargetParams()
         conform_params.conform_target_mesh.target_parts_type = unreal.TargetPartsType.HEAD_ONLY
         conform_params.conform_target_mesh.head_vertices = body_vertices
@@ -142,33 +156,26 @@ def main():
         conform_params.auto_solve = True
         conform_params.body_conform_solve_settings.pipeline_name = "combined"
 
-        # TEMPORARY DIAGNOSTIC: camera/landmark term commented out to test
-        # whether the guessed camera parameters are causing the distortion.
-        # If this produces a reasonable (if imperfect) head shape, that
-        # confirms the camera guess -- not the vertex data -- was the problem.
-        #
-        # view_info = unreal.MinimalViewInfo()
-        # view_info.location = CAMERA_LOCATION
-        # view_info.rotation = CAMERA_ROTATION
-        # view_info.fov = CAMERA_FOV_DEG
-        # view_info.aspect_ratio = float(image_size.x) / float(image_size.y)
-        # view_info.projection_mode = unreal.CameraProjectionMode.PERSPECTIVE
-        # conform_params.curve_tracking_points = curve_tracking
-        # conform_params.camera_view_info = view_info
-        # conform_params.image_size = image_size
-        print("[person2meta] DIAGNOSTIC MODE: skipping camera/landmark term, "
-              "vertex-only fit.")
+        view_info = unreal.MinimalViewInfo()
+        view_info.location = CAMERA_LOCATION
+        view_info.rotation = CAMERA_ROTATION
+        view_info.fov = CAMERA_FOV_DEG
+        view_info.aspect_ratio = float(image_size.x) / float(image_size.y)
+        view_info.projection_mode = unreal.CameraProjectionMode.PERSPECTIVE
+        conform_params.curve_tracking_points = curve_tracking
+        conform_params.camera_view_info = view_info
+        conform_params.image_size = image_size
 
         target_mesh_key = unreal.MetaHumanCharacterTargetMeshKey()
         target_mesh_key.head_mesh = target_mesh
 
-        print(f"[person2meta] Running conform ({len(curve_tracking)} face curves)...")
+        log(f"[person2meta] Running conform ({len(curve_tracking)} face curves)...")
         if not metahuman_subsystem.conform_to_target_meshes(character, target_mesh_key, conform_params):
             raise RuntimeError("conform_to_target_meshes failed")
 
         metahuman_subsystem.commit_posed_state_as_a_pose(character, target_mesh_key)
         unreal.EditorAssetLibrary.save_asset(asset_path, only_if_is_dirty=True)
-        print(f"[person2meta] Conform complete -- saved {asset_path}")
+        log(f"[person2meta] Conform complete -- saved {asset_path}")
         conform_succeeded = True
 
     finally:
@@ -181,5 +188,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
     main()

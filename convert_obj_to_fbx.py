@@ -65,6 +65,37 @@ if not bpy.context.scene.objects:
 imported_count = len(bpy.context.scene.objects)
 print(f"[person2meta] Imported {imported_count} object(s) from OBJ.")
 
+# --- Normalize to a realistic real-world size. ---
+# KeenTools' reconstruction isn't calibrated to true physical scale (there's
+# no reference object in an ordinary photo to derive that from), so the raw
+# mesh can come out at an arbitrary size -- we saw ~3.75m tall in one test,
+# when a head+neck+shoulders bust should realistically be ~0.35-0.45m tall.
+# Rather than trust KeenTools' raw units, measure the actual bounding box
+# and rescale to a target height ourselves.
+TARGET_HEIGHT_METERS = 0.4  # reasonable placeholder for a head+neck+shoulders bust
+
+bpy.ops.object.select_all(action='SELECT')
+# Compute the combined bounding box across all selected objects, in world space.
+min_z = min(
+    (obj.matrix_world @ v.co).z
+    for obj in bpy.context.selected_objects if obj.type == 'MESH'
+    for v in obj.data.vertices
+)
+max_z = max(
+    (obj.matrix_world @ v.co).z
+    for obj in bpy.context.selected_objects if obj.type == 'MESH'
+    for v in obj.data.vertices
+)
+current_height = max_z - min_z
+if current_height <= 0:
+    fail(f"Computed a non-positive height ({current_height}) -- mesh data looks broken.")
+
+scale_factor = TARGET_HEIGHT_METERS / current_height
+print(f"[person2meta] Raw height: {current_height:.4f} units. "
+      f"Scaling by {scale_factor:.6f} to reach target height {TARGET_HEIGHT_METERS}m.")
+
+bpy.ops.transform.resize(value=(scale_factor, scale_factor, scale_factor))
+
 # --- Bake any object-level transform (scale/rotation from the OBJ import)
 # into the actual vertex data, so it can't interact unpredictably with the
 # FBX export's own scale/axis settings below. ---

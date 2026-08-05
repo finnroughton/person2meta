@@ -23,12 +23,23 @@ def pick_images() -> list[str]:
     root = tk.Tk()
     root.withdraw()  # hide the empty root window, we only want the dialog
 
+    # When this script is launched from a non-foreground process (e.g. a
+    # background task runner rather than an interactive terminal you clicked
+    # into), Windows won't hand the new window focus on its own -- it just
+    # opens behind whatever's already in front. Forcing the root topmost
+    # (the file dialog inherits this since it's root's child) makes it
+    # actually rise above other windows instead of hiding behind them.
+    root.attributes("-topmost", True)
+    root.lift()
+    root.focus_force()
+
     filetypes = [
         ("Image files", "*.jpg *.jpeg *.png *.tif *.tiff *.bmp"),
         ("All files", "*.*"),
     ]
 
     paths = filedialog.askopenfilenames(
+        parent=root,
         title="Select face images",
         filetypes=filetypes,
     )

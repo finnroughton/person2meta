@@ -83,7 +83,124 @@ in the Blender->FBX->Unreal chain. Worth checking OBJ file's raw vertex
 coordinate values directly (e.g. via a text editor or simple script) as a
 completely independent data point.
 
-## LATEST UPDATE: scale bug fixed, but new blank-result problem (most recent, active)
+## LATEST UPDATE 2: blank-result bug found and fixed -- head now renders, mild distortion remains (most recent, active)
+
+Three real bugs were found and fixed in `conform_to_metahuman.py`, in order of discovery:
+
+1. **Pipeline/target-type mismatch**: the script set `target_parts_type = HEAD_ONLY`
+   but left `body_conform_solve_settings.pipeline_name = "combined"`, copied
+   unedited from Epic's `example_conform_from_custom_mesh.py` (where it's correct,
+   because that example uses `TargetPartsType.COMBINED`). Epic ships four separate
+   tuned solver presets in `pipeline_presets.json` (shipped with the engine at
+   `Engine/Plugins/MetaHuman/MetaHumanCharacter/Content/Body/IdentityTemplate/pipeline_presets.json`):
+   `combined`, `body_only`, `head_body`, `head_only`. Fixed by changing to
+   `pipeline_name = "head_only"`. Real bug, but NOT the actual cause of the blank
+   result (still blank after this fix alone).
+
+2. **The actual root cause of the blank result -- a world-space position mismatch**:
+   confirmed via `unreal.load_asset(...).get_bounds()` (same technique used for the
+   earlier scale-bug diagnosis) that our imported `SM_natalie` mesh sits at roughly
+   `(0.2, -0.9, -3.8)` -- essentially world origin -- while the engine's own
+   archetype head reference (`/MetaHumanCharacter/Face/SKM_Face`) sits at
+   `(0, 2, 153.1)`, i.e. MetaHuman's rig expects a head-only target mesh to be
+   positioned at roughly head height (~150-165 units up), not at world origin.
+   This ~157-unit Z gap meant the 2D-landmark-to-3D-mesh raycasting
+   (`TriangulateLandmarksViaAABB` in `BodyShapeEditor.cpp`) missed the mesh
+   entirely, producing the `insufficient correspondences` warning, and gave the
+   ICP-based body/face solve nothing nearby to converge onto. **Fixed** by
+   translating the extracted vertex data onto the archetype head's position
+   before building the solve target, computed dynamically at runtime via
+   `get_bounds()` on both meshes (no hardcoded offset) -- see
+   `conform_to_metahuman.py` around the `Re-centering target mesh` log line.
+   After this fix, the `insufficient correspondences` warning disappeared and a
+   real (non-blank) head rendered for the first time.
+
+3. **Camera/landmark term makes results worse, not better**: with correspondences
+   now actually being found, the previously-guessed `CAMERA_LOCATION` /
+   `CAMERA_ROTATION` / `CAMERA_FOV_DEG` values started actively influencing the
+   solve via the 2D landmark term -- and the result came out both **disfigured
+   and undersized**. Disabling the camera/landmark term entirely (leaving
+   `curve_tracking_points` / `camera_view_info` / `image_size` unset, so
+   `AlignToTargetMesh` skips its Procrustes scale/rotation step and the solve
+   relies purely on 3D ICP vertex fitting) produced a **measurably better**
+   result: correctly sized, only mildly disfigured. `USE_CAMERA_LANDMARK_TERM`
+   is now `False` by default in the script.
+   - Checked whether a real (non-guessed) camera was available: `natalie1_camera.nk`
+     (a Nuke camera-tracking script, sitting next to `natalie1.png`) does contain
+     computed camera parameters, but it's from a **separate, unrelated local
+     Nuke/Blender+KeenTools tracking pipeline** for `natalie1.obj`/`natalie1.mov`
+     -- not for `natalie_head.fbx` (the KeenTools Cloud API pipeline `run_pipeline.py`
+     uses) -- so its translate/rotate values are in an incompatible coordinate
+     space and can't be transplanted directly. Its FOV, computed from
+     `focal=50.44mm` / `haperture=36mm` as `2*atan(haperture/(2*focal))`, comes out
+     to **~39.3 degrees**, almost exactly matching the guessed `CAMERA_FOV_DEG = 40`
+     -- so FOV specifically was not the source of the distortion; it's more likely
+     the guessed camera *position/rotation* (unrelated to FOV) producing bad
+     correspondences/scale even when "enough" of them are found.
+
+**Update on the mild disfigurement -- fixed via a synthetic-camera landmark
+approach**: rather than pursuing `key_point_targets` (which needs 3D landmark
+points identified on the scan -- a hard sub-problem on its own), found a more
+tractable way to get the same underlying benefit (accurate correspondences for
+Align's rigid scale/rotation solve) without any camera calibration at all:
+
+1. First ruled out orientation/axis mismatch as the cause: rendered
+   `natalie_head.fbx` from multiple angles in Blender (headless,
+   `bpy.ops.render.render`) and visually confirmed the source scan itself is
+   clean, undistorted, and correctly oriented (a normal recognizable face, not
+   garbled) -- so the disfigurement was being introduced by the Unreal solve,
+   not inherited from bad source data or a backwards/rotated mesh.
+2. Checked `natalie1_camera.nk` (a Nuke camera-tracking script sitting next to
+   the portrait) as a possible source of a *real* calibrated camera. Turned out
+   to be for a separate, unrelated local Nuke/Blender+KeenTools tracking
+   pipeline (`natalie1.obj`/`natalie1.mov`), not `natalie_head.fbx`, so its
+   translate/rotate values are in an incompatible coordinate space and can't be
+   used directly. Its FOV (computed from `focal=50.44mm`/`haperture=36mm` as
+   `2*atan(haperture/(2*focal))` = ~39.3 degrees) does closely match the
+   originally-guessed 40 degrees, though, confirming FOV specifically was never
+   the problem.
+3. **The actual fix**: instead of using the real (uncalibrated) portrait photo
+   at all, the script now spawns the imported scan into the editor level,
+   captures a synthetic render of it from a `SceneCapture2D` camera it fully
+   controls (position/rotation/FOV all exactly known, not guessed), and runs
+   the same face-landmark detector (`track_face_landmarks_from_image`) on that
+   synthetic image instead of the phone photo. Since the camera parameters fed
+   into `ConformTargetParams.camera_view_info` are then *exactly* correct by
+   construction (they're the same numbers used to render the image landmarks
+   were detected on), Align's Procrustes correspondence search has zero
+   calibration uncertainty. See `capture_synthetic_portrait_and_track_landmarks()`
+   in `conform_to_metahuman.py`.
+4. Result: running with this real (self-consistent) camera/landmark term
+   active produces **no `insufficient correspondences` warning and no errors**
+   -- a clean run start to finish. `USE_CAMERA_LANDMARK_TERM` toggle was
+   removed since the camera/landmark term is no longer a guess; it's always
+   used now. **Not yet visually confirmed non-disfigured** -- that's the next
+   thing to check by opening the resulting `MHC_natalie` in the editor.
+
+**Current status**: awaiting visual confirmation of the synthetic-camera fix
+above. If still disfigured, next things to check, roughly in order:
+
+1. Synthetic camera framing is fairly loose (face takes up only ~25% of the
+   768x768 render) -- tightening it (smaller FOV or closer camera) would give
+   the landmark detector more pixel density on facial features and likely more
+   precise correspondences.
+2. Try `TargetPartsType.HEAD_AND_BODY` now that the position, pipeline-name, and
+   camera-calibration bugs are all fixed -- worth re-testing since the original
+   attempt predates all of today's fixes.
+3. `key_point_targets` (explicit 3D vertex-index -> 3D-position pin constraints)
+   remains available as a further-precision option if ICP + accurate Align
+   still isn't quite exact enough on its own.
+
+**Tooling note for future headless/scripted testing**: `-ExecCmds="py \"path\""`
+on the Unreal command line fires as a deferred startup command too early (before
+the Asset Registry finishes loading) and silently never executes the script --
+even a trivial `print()`-only script hung indefinitely with no error. Use
+`-ExecutePythonScript="path"` instead (also add `-unattended -nosplash`) --
+it properly waits for Python + the Asset Registry to be ready via
+`EditorPythonExecuter.cpp`'s tickable-object mechanism, and auto-quits the editor
+when the script finishes.
+
+## LATEST UPDATE 1: scale bug fixed, but new blank-result problem (superseded by update above)
 
 **Good news first**: the scale mismatch above WAS real and IS now fixed.
 Added an auto-normalization step to `convert_obj_to_fbx.py` that measures

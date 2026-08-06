@@ -56,6 +56,16 @@ BLENDER_EXE = r"C:\Program Files\Blender Foundation\Blender 5.2\blender.exe"
 BAKE_SCRIPT_PATH = os.path.join(SCRIPTS_DIR, "bake_texture.py")
 # --------------------------------------------------------------
 
+# Testing whether the synthetic-camera/landmark term (Align's rigid
+# scale/rotation solve) is distorting the conform result -- suspected of
+# shrinking/reshaping the face region relative to the head, which would
+# explain the "smaller face with a visible seam" symptom in the baked
+# texture as a conform-geometry issue, not a texture-bake issue. The old
+# KeenTools-cloud pipeline's own history (see README) found this term made
+# results WORSE, not better, for the same reason -- worth re-testing here.
+USE_CAMERA_LANDMARK_TERM = False
+# --------------------------------------------------------------
+
 LOG_FILE_PATH = os.path.join(os.path.dirname(CONFIG_PATH), "person2meta_conform_log.txt")
 
 
@@ -254,7 +264,15 @@ def apply_baked_face_texture(metahuman_subsystem, character, asset_path, import_
     task = unreal.AssetImportTask()
     task.filename = baked_texture_path
     task.destination_path = import_destination_path
-    task.destination_name = "T_" + os.path.splitext(os.path.basename(baked_texture_path))[0]
+    # baked_texture_path is always named "baked_face_texture.png" (only the
+    # containing per-head folder differs), so basing the asset name on the
+    # file's own basename produced the SAME asset name ("T_baked_face_texture")
+    # every single run. replace_existing=True should overwrite it correctly,
+    # but Unreal's asset registry/editor can hang onto stale cached texture
+    # data for an already-loaded/previously-viewed asset of the same name --
+    # naming it after the actual character instead guarantees a fresh, unique
+    # asset every run.
+    task.destination_name = f"T_{os.path.basename(asset_path)}_face_texture"
     task.replace_existing = True
     task.automated = True
     task.save = True
@@ -266,6 +284,14 @@ def apply_baked_face_texture(metahuman_subsystem, character, asset_path, import_
         raise RuntimeError(f"Texture import did not produce an asset at {texture_path}")
     log(f"[person2meta] Imported texture: {face_texture.get_path_name()}")
 
+    _apply_face_texture_override(metahuman_subsystem, character, asset_path, face_texture)
+
+
+def _apply_face_texture_override(metahuman_subsystem, character, asset_path, face_texture):
+    """Shared by apply_baked_face_texture and apply_synthesized_texture_override
+    -- wires face_texture in as the face Basecolor texture override on
+    character and saves. Requires character to NOT already be added for
+    editing (this function manages its own edit session)."""
     if not metahuman_subsystem.try_add_object_to_edit(character):
         raise RuntimeError("Unable to edit asset for texture override, is it already open for edit?")
     try:
@@ -282,13 +308,42 @@ def apply_baked_face_texture(metahuman_subsystem, character, asset_path, import_
         metahuman_subsystem.commit_skin_settings(character, skin_settings)
         metahuman_subsystem.commit_skin_settings(character, skin_settings)
         unreal.EditorAssetLibrary.save_asset(asset_path, only_if_is_dirty=True)
-        log(f"[person2meta] Applied face Basecolor texture override and saved {asset_path}")
+        log(f"[person2meta] Applied face Basecolor texture override "
+            f"({face_texture.get_path_name()}) and saved {asset_path}")
     finally:
         if metahuman_subsystem.is_object_added_for_editing(character):
             metahuman_subsystem.remove_object_to_edit(character)
 
 
+def apply_synthesized_texture_override(metahuman_subsystem, character, asset_path, texture_asset_path):
+    """Loads MetaHuman's OWN auto-synthesized texture (already sitting in the
+    content folder after conform/commit_skin_settings first ran, named
+    "<head_name>_texture") and applies it as an EXPLICIT face Basecolor
+    override, instead of leaving it as an implicit default. Returns True if
+    found and applied, False (non-fatal, logs a warning) if no texture
+    exists at that path yet."""
+    face_texture = unreal.load_asset(texture_asset_path)
+    if face_texture is None:
+        log(f"[person2meta] WARNING: No synthesized texture found at "
+            f"{texture_asset_path} -- skipping explicit override.")
+        return False
+    log(f"[person2meta] Found synthesized texture: {face_texture.get_path_name()}")
+    _apply_face_texture_override(metahuman_subsystem, character, asset_path, face_texture)
+    return True
+
+
 def main():
+    # -ExecutePythonScript auto-quits the editor one tick after this script
+    # returns (EditorPythonExecuter.cpp: FExecuterTickable::Tick checks
+    # UEditorPythonScriptingLibrary::GetKeepPythonScriptAlive() and calls
+    # QUIT_EDITOR if it's false, which is the default) -- fine for a batch
+    # run, but not when launched from the Blender "Export & Build MetaHuman"
+    # button, where the whole point is to leave the result open to inspect.
+    # Python-exposed name is EditorPythonScripting, NOT
+    # EditorPythonScriptingLibrary -- the C++ class has
+    # UCLASS(meta=(ScriptName="EditorPythonScripting")) overriding it.
+    unreal.EditorPythonScripting.set_keep_python_script_alive(True)
+
     if not os.path.exists(CONFIG_PATH):
         raise RuntimeError(
             f"Config not found at {CONFIG_PATH}. Run run_pipeline.py first, "
@@ -337,11 +392,15 @@ def main():
     log(f"[person2meta] Re-centering target mesh onto MetaHuman head-space by {offset}")
     body_vertices = [unreal.Vector3f(v.x + offset.x, v.y + offset.y, v.z + offset.z) for v in body_vertices]
 
-    log("[person2meta] Capturing synthetic portrait and running face landmark detection...")
-    curve_tracking, camera_location, camera_rotation, fov_deg, image_size = (
-        capture_synthetic_portrait_and_track_landmarks(metahuman_subsystem, target_mesh, offset)
-    )
-    log(f"[person2meta] Detected {len(curve_tracking)} contour curves on synthetic render.")
+    curve_tracking = camera_location = camera_rotation = fov_deg = image_size = None
+    if USE_CAMERA_LANDMARK_TERM:
+        log("[person2meta] Capturing synthetic portrait and running face landmark detection...")
+        curve_tracking, camera_location, camera_rotation, fov_deg, image_size = (
+            capture_synthetic_portrait_and_track_landmarks(metahuman_subsystem, target_mesh, offset)
+        )
+        log(f"[person2meta] Detected {len(curve_tracking)} contour curves on synthetic render.")
+    else:
+        log("[person2meta] USE_CAMERA_LANDMARK_TERM=False -- skipping camera/landmark term, pure ICP fit.")
 
     log("[person2meta] Creating MetaHumanCharacter asset...")
     asset_tools = unreal.AssetToolsHelpers.get_asset_tools()
@@ -416,20 +475,22 @@ def main():
         settings.seam_laplacian = 1.5
         settings.seam_rings = 12
 
-        view_info = unreal.MinimalViewInfo()
-        view_info.location = camera_location
-        view_info.rotation = camera_rotation
-        view_info.fov = fov_deg
-        view_info.aspect_ratio = float(image_size.x) / float(image_size.y)
-        view_info.projection_mode = unreal.CameraProjectionMode.PERSPECTIVE
-        conform_params.curve_tracking_points = curve_tracking
-        conform_params.camera_view_info = view_info
-        conform_params.image_size = image_size
+        if USE_CAMERA_LANDMARK_TERM:
+            view_info = unreal.MinimalViewInfo()
+            view_info.location = camera_location
+            view_info.rotation = camera_rotation
+            view_info.fov = fov_deg
+            view_info.aspect_ratio = float(image_size.x) / float(image_size.y)
+            view_info.projection_mode = unreal.CameraProjectionMode.PERSPECTIVE
+            conform_params.curve_tracking_points = curve_tracking
+            conform_params.camera_view_info = view_info
+            conform_params.image_size = image_size
 
         target_mesh_key = unreal.MetaHumanCharacterTargetMeshKey()
         target_mesh_key.head_mesh = target_mesh
 
-        log(f"[person2meta] Running conform ({len(curve_tracking)} face curves)...")
+        log(f"[person2meta] Running conform "
+            f"({len(curve_tracking) if curve_tracking else 0} face curves)...")
         if not metahuman_subsystem.conform_to_target_meshes(character, target_mesh_key, conform_params):
             raise RuntimeError("conform_to_target_meshes failed")
 
@@ -446,17 +507,20 @@ def main():
                 f"Conform did not succeed -- {asset_path} may need manual cleanup."
             )
 
+    # Texture override: our own custom re-projected texture (T_MHC..., from
+    # export_conformed_geometry_fbx + run_blender_texture_bake +
+    # apply_baked_face_texture) was dropped after comparison -- MetaHuman's
+    # own built-in AI texture synthesis (auto-generated the moment
+    # commit_skin_settings/conform first runs on a brand-new character,
+    # landing in the content folder named "<head_name>_texture") looked
+    # properly fitted on its own. Rather than leave that as an implicit
+    # default, explicitly wire it in as the face Basecolor override so it's
+    # a visible, editable override going forward instead of a hidden
+    # auto-generated default.
     if conform_succeeded:
-        work_dir = os.path.join(os.path.dirname(CONFIG_PATH), f"{config['head_name']}_bake_work")
-        conformed_head_fbx = os.path.join(work_dir, "conformed_head.fbx")
-        baked_texture_path = os.path.join(work_dir, "baked_face_texture.png")
-
-        export_conformed_geometry_fbx(
-            metahuman_subsystem, character, f"{import_destination_path}/export", conformed_head_fbx
-        )
-        run_blender_texture_bake(fbx_path, conformed_head_fbx, baked_texture_path)
-        apply_baked_face_texture(
-            metahuman_subsystem, character, asset_path, import_destination_path, baked_texture_path
+        synthesized_texture_path = f"{import_destination_path}/{config['head_name']}_texture"
+        apply_synthesized_texture_override(
+            metahuman_subsystem, character, asset_path, synthesized_texture_path
         )
 
 

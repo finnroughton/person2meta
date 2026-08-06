@@ -110,9 +110,31 @@ tgt_center, tgt_size = world_bounds(target_obj)
 log(f"source center={tuple(src_center)} size={tuple(src_size)}")
 log(f"target center={tuple(tgt_center)} size={tuple(tgt_size)}")
 
-# The two FBXs come from completely separate export paths (KeenTools/Blender vs
-# Unreal) and land at different world positions even though they're the same
-# scale. Align target onto source so Selected-to-Active baking's ray search can
+# The two FBXs come from completely separate export paths (our Blender export
+# vs Unreal's own conform-and-export) and were observed to NOT be the same
+# scale -- e.g. one run measured source size=(0.256, 0.295, 0.400) vs target
+# size=(0.436, 0.305, 0.484), a ~1.7x mismatch in X and ~1.2x in Z. A pure
+# translation (matching centers only, no scale correction) assumes matching
+# size; when they don't match, Selected-to-Active's radius-limited ray search
+# either misses correspondences near the larger mesh's edges (holes) or --
+# worse, on a left-right-symmetric surface like a face -- snaps onto the
+# WRONG point across the midline, producing exactly the mirrored/kaleidoscope
+# artifacts observed in the baked texture. Scale is corrected per-axis (not
+# uniformly) since the mismatch isn't uniform across X/Y/Z above -- likely
+# MetaHuman's conform reshapes proportions toward its own archetype, not just
+# a scale/unit difference.
+if tgt_size.x > 0 and tgt_size.y > 0 and tgt_size.z > 0:
+    scale = mathutils.Vector((src_size.x / tgt_size.x, src_size.y / tgt_size.y, src_size.z / tgt_size.z))
+    bpy.ops.object.select_all(action='DESELECT')
+    target_obj.select_set(True)
+    bpy.context.view_layer.objects.active = target_obj
+    bpy.ops.transform.resize(value=tuple(scale))
+    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+    log(f"scaled target per-axis by {tuple(scale)} to match source's size")
+    tgt_center, tgt_size = world_bounds(target_obj)  # recompute after scaling
+    log(f"target size after scaling={tuple(tgt_size)}")
+
+# Align target onto source so Selected-to-Active baking's ray search can
 # actually find corresponding surface points.
 offset = src_center - tgt_center
 target_obj.location += offset
@@ -178,8 +200,16 @@ scene.render.engine = 'CYCLES'
 scene.cycles.device = 'CPU'
 scene.cycles.samples = 16
 scene.render.bake.use_selected_to_active = True
-scene.render.bake.cage_extrusion = 0.08
-scene.render.bake.max_ray_distance = 0.25
+# Both were way too large relative to head size (~0.4m tall, eye-to-eye
+# ~0.06-0.08m) -- max_ray_distance=0.25 is well over half the head's
+# height, easily letting a ray searching near one eye cross the midline
+# and sample the OTHER eye or an unrelated feature instead, producing
+# ghosting/doubling artifacts around eyes and nose specifically (the most
+# curved, symmetric regions, most sensitive to this). Tightened to values
+# proportional to expected surface deviation between the scan and the
+# conformed mesh, not the whole head's scale.
+scene.render.bake.cage_extrusion = 0.03
+scene.render.bake.max_ray_distance = 0.1
 scene.cycles.bake_type = 'DIFFUSE'
 scene.render.bake.use_pass_direct = False
 scene.render.bake.use_pass_indirect = False

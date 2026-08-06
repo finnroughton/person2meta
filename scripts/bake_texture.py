@@ -54,8 +54,9 @@ if not os.path.isfile(TARGET_FBX):
 # own site-packages under Program Files isn't writable without admin rights), and
 # Blender's embedded interpreter doesn't add that to sys.path by default -- so add it
 # explicitly before importing.
-import sys
-USER_SITE_PACKAGES = r"C:\Users\BrianBurritt\AppData\Roaming\Python\Python313\site-packages"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # for `import p2m_settings`
+import p2m_settings
+USER_SITE_PACKAGES = p2m_settings.load_settings()["python_user_site_packages"]
 if os.path.isdir(USER_SITE_PACKAGES) and USER_SITE_PACKAGES not in sys.path:
     sys.path.insert(0, USER_SITE_PACKAGES)
 try:

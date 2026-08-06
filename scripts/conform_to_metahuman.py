@@ -23,6 +23,19 @@ Full flow:
      naive UV copy, which produces a scrambled result since the scan and the
      conformed mesh have completely different UV layouts.
   6. Apply the baked texture as a face Basecolor override and save.
+  7. Auto-rig the character (joints + blendshapes) via Epic's cloud
+     auto-rigging service, so the result is animation-ready, not just a
+     static conformed mesh. Requires being logged into an Epic account in
+     the editor -- the request blocks until the service responds and, on a
+     first-ever run, may prompt an Epic sign-in the first time it's called.
+  8. If an audio file was picked (Blender's Audio/Video prompt -- see
+     blender_startup.py), run it through MetaHuman's built-in AI Audio
+     Driven Animation (adapted from Epic's own
+     process_audio_performance.py / export_performance.py examples) and
+     export the result as an AnimSequence on the shared MetaHuman face
+     skeleton. Video input is NOT handled here yet -- Epic's own pipeline
+     for that expects footage from the LiveLink Face capture app, not an
+     arbitrary video file, which is a bigger separate effort.
 
 Note: Epic account login happens later, at the auto-rig step (or if you use
 Epic's own AI texture synthesis instead of step 5 above) -- not here.
@@ -43,18 +56,30 @@ correctly with zero calibration uncertainty.
 import json
 import os
 import subprocess
+import sys
 import time
 import unreal
 
-# ---- EDIT ONCE: where run_pipeline.py wrote the config ----
-CONFIG_PATH = r"C:\Users\BrianBurritt\Downloads\person2meta_config.json"
-# --------------------------------------------------------------
+# Unreal's -ExecutePythonScript doesn't reliably add this script's own
+# directory to sys.path -- add it explicitly so `import p2m_settings` works.
+SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, SCRIPTS_DIR)
+import p2m_settings
 
-# ---- EDIT ONCE: where this script itself lives, and where Blender is ----
-SCRIPTS_DIR = r"C:\Users\BrianBurritt\Documents\person2meta\scripts"
-BLENDER_EXE = r"C:\Program Files\Blender Foundation\Blender 5.2\blender.exe"
+# All machine-specific paths now live in one place -- see p2m_settings.py
+# (and person2meta_settings.json, created next to it) to edit them.
+_settings = p2m_settings.load_settings()
+
+# Fallback default; blender_startup.py normally overrides this per-head via
+# the P2M_CONFIG_PATH env var -- see that script's _try_export_and_build for
+# why: a single shared config file gets clobbered when exporting a second
+# head in a multi-head session before the first head's Unreal instance has
+# even finished starting up and reading it.
+CONFIG_PATH = os.environ.get("P2M_CONFIG_PATH") or os.path.join(
+    _settings["work_dir"], "person2meta_config.json"
+)
+BLENDER_EXE = _settings["blender_exe"]
 BAKE_SCRIPT_PATH = os.path.join(SCRIPTS_DIR, "bake_texture.py")
-# --------------------------------------------------------------
 
 # Testing whether the synthetic-camera/landmark term (Align's rigid
 # scale/rotation solve) is distorting the conform result -- suspected of
@@ -66,7 +91,10 @@ BAKE_SCRIPT_PATH = os.path.join(SCRIPTS_DIR, "bake_texture.py")
 USE_CAMERA_LANDMARK_TERM = False
 # --------------------------------------------------------------
 
-LOG_FILE_PATH = os.path.join(os.path.dirname(CONFIG_PATH), "person2meta_conform_log.txt")
+LOG_FILE_PATH = (
+    os.environ.get("P2M_CONFORM_LOG_PATH")
+    or os.path.join(os.path.dirname(CONFIG_PATH), "person2meta_conform_log.txt")
+)
 
 
 def log(message: str) -> None:
@@ -332,6 +360,185 @@ def apply_synthesized_texture_override(metahuman_subsystem, character, asset_pat
     return True
 
 
+def export_synced_level_sequence(metahuman_subsystem, character, anim_sequence, sound_wave,
+                                 output_package_path: str, head_name: str):
+    """Builds a Level Sequence combining a real MetaHuman actor (playing
+    anim_sequence on its Face component) with an Audio Track for
+    sound_wave, so opening ONE asset and pressing play lets you see the
+    facial animation AND hear the audio that drove it, together, in sync --
+    neither the AnimSequence nor the SoundWave alone plays back the other.
+
+    Epic's own export_performance.py (run_meta_human_level_sequence_export)
+    does something similar, but needs an existing MetaHuman BLUEPRINT asset
+    as a target -- this pipeline builds a MetaHumanCharacter directly and
+    never creates a placeable Blueprint (that's a separate manual "Create
+    MetaHuman" step in the normal workflow). Spawning a real actor straight
+    from the character via MetaHumanCharacterEditorSubsystem's
+    spawn_meta_human_actor (confirmed UFUNCTION(BlueprintCallable), so
+    Python-exposed) sidesteps needing that Blueprint at all.
+
+    Non-fatal on any failure (logs a warning and returns) -- this is a
+    convenience preview; the actual character + AnimSequence are already
+    saved by the time this runs regardless of whether it succeeds."""
+    try:
+        actor = metahuman_subsystem.spawn_meta_human_actor(character, False)
+        if actor is None:
+            log("[person2meta] WARNING: Could not spawn a MetaHuman actor -- "
+                "skipping synced audio+animation preview.")
+            return
+
+        # MetaHuman actors have several skeletal mesh components (face, body,
+        # etc) -- export_performance.py's own is_meta_human_binding() helper
+        # confirms "Face" is the real component name to look for.
+        components = actor.get_components_by_class(unreal.SkeletalMeshComponent)
+        face_component = next((c for c in components if "face" in c.get_name().lower()), None)
+        if face_component is None and components:
+            face_component = components[0]
+        if face_component is None:
+            log("[person2meta] WARNING: Spawned MetaHuman actor has no skeletal "
+                "mesh component -- skipping synced audio+animation preview.")
+            return
+
+        length_seconds = sound_wave.get_editor_property("duration") or 5.0
+
+        asset_tools = unreal.AssetToolsHelpers.get_asset_tools()
+        sequence = asset_tools.create_asset(
+            asset_name=f"LS_{head_name}_Synced", package_path=output_package_path,
+            asset_class=unreal.LevelSequence, factory=unreal.LevelSequenceFactoryNew(),
+        )
+        if sequence is None:
+            log("[person2meta] WARNING: Could not create Level Sequence asset -- "
+                "skipping synced audio+animation preview.")
+            return
+
+        actor_binding = sequence.add_possessable(actor)
+        face_binding = sequence.add_possessable(face_component)
+        face_binding.set_parent(actor_binding)
+
+        anim_track = face_binding.add_track(unreal.MovieSceneSkeletalAnimationTrack)
+        anim_section = anim_track.add_section()
+        anim_section.params.animation = anim_sequence
+        anim_section.set_start_frame_seconds(0)
+        anim_section.set_end_frame_seconds(length_seconds)
+
+        audio_track = sequence.add_track(unreal.MovieSceneAudioTrack)
+        audio_section = audio_track.add_section()
+        audio_section.set_sound(sound_wave)
+        audio_section.set_start_frame_seconds(0)
+        audio_section.set_end_frame_seconds(length_seconds)
+
+        sequence.set_playback_start_seconds(0)
+        sequence.set_playback_end_seconds(length_seconds)
+
+        unreal.EditorAssetLibrary.save_asset(sequence.get_path_name(), only_if_is_dirty=False)
+        log(f"[person2meta] Synced audio+animation preview: {sequence.get_path_name()} "
+            f"(open it and press play to see and hear the result together).")
+    except Exception as e:
+        log(f"[person2meta] WARNING: Could not build synced level sequence: "
+            f"{type(e).__name__}: {e}")
+
+
+def run_audio_driven_animation(metahuman_subsystem, character, audio_path: str,
+                               import_destination_path: str, output_package_path: str,
+                               head_name: str):
+    """Imports audio_path as a SoundWave, runs it through MetaHuman's
+    built-in AI Audio Driven Animation (a MetaHumanPerformance asset with
+    input_type=AUDIO), and exports the solved result as an AnimSequence on
+    the shared MetaHuman face skeleton. Adapted from Epic's own
+    process_audio_performance.py and export_performance.py examples
+    (Engine/Plugins/MetaHuman/MetaHumanAnimator/Content/Python/) -- audio
+    input doesn't need a per-character Identity/footage setup the way video
+    does, so the animation solve itself is self-contained, not tied to a
+    specific MetaHumanCharacter asset (metahuman_subsystem/character are
+    only used afterward, to build a synced preview -- see
+    export_synced_level_sequence). Non-fatal on failure (logs and returns)
+    since the MetaHuman itself is already built by this point regardless."""
+    log(f"[person2meta] Importing audio for animation: {audio_path}")
+    task = unreal.AssetImportTask()
+    task.filename = audio_path
+    task.destination_path = import_destination_path
+    task.destination_name = f"SW_{head_name}_audio"
+    task.replace_existing = True
+    task.automated = True
+    task.save = True
+    unreal.AssetToolsHelpers.get_asset_tools().import_asset_tasks([task])
+
+    sound_wave_path = f"{import_destination_path}/{task.destination_name}"
+    sound_wave = unreal.load_asset(sound_wave_path)
+    if sound_wave is None:
+        log(f"[person2meta] WARNING: Audio import did not produce an asset at "
+            f"{sound_wave_path} -- skipping animation.")
+        return
+
+    log("[person2meta] Requesting audio-driven animation...")
+    performance_name = f"{head_name}_Performance"
+    asset_tools = unreal.AssetToolsHelpers.get_asset_tools()
+    performance_asset = asset_tools.create_asset(
+        asset_name=performance_name, package_path=output_package_path,
+        asset_class=unreal.MetaHumanPerformance, factory=unreal.MetaHumanPerformanceFactoryNew(),
+    )
+    if performance_asset is None:
+        log(f"[person2meta] WARNING: Could not create Performance asset "
+            f"'{performance_name}' -- skipping animation.")
+        return
+
+    # set_editor_property (not plain attribute assignment) is required here --
+    # it's what actually triggers the PostEditChangeProperty callback that
+    # sets up the Performance asset internally (same note as in Epic's own
+    # process_audio_performance.py).
+    performance_asset.set_editor_property("input_type", unreal.DataInputType.AUDIO)
+    performance_asset.set_editor_property("audio", sound_wave)
+
+    solve_overrides = unreal.AudioDrivenAnimationSolveOverrides()
+    solve_overrides.mood = unreal.AudioDrivenAnimationMood.AUTO_DETECT
+    solve_overrides.mood_intensity = 1.0
+    performance_asset.set_editor_property("audio_driven_animation_solve_overrides", solve_overrides)
+    performance_asset.set_editor_property(
+        "audio_driven_animation_output_controls", unreal.AudioDrivenAnimationOutputControls.FULL_FACE
+    )
+    performance_asset.set_editor_property(
+        "head_movement_mode", unreal.PerformanceHeadMovementMode.CONTROL_RIG
+    )
+
+    performance_asset.set_blocking_processing(True)
+    log("[person2meta] Running audio-driven animation solve (this can take a bit)...")
+    start_pipeline_error = performance_asset.start_pipeline()
+    if start_pipeline_error != unreal.StartPipelineErrorType.NONE:
+        log(f"[person2meta] WARNING: Audio-driven animation pipeline failed to "
+            f"start ({start_pipeline_error}) -- skipping export.")
+        return
+
+    log("[person2meta] Exporting animation sequence...")
+    export_settings = unreal.MetaHumanPerformanceExportAnimationSettings()
+    export_settings.show_export_dialog = False
+    export_settings.package_path = output_package_path
+    export_settings.asset_name = f"AS_{head_name}"
+    # Same archetype skeleton conform_to_metahuman.py already references for
+    # alignment (/MetaHumanCharacter/Face/SKM_Face) -- the plugin's own
+    # content mount, not Epic's example's /Game/MetaHumans/Common/... path,
+    # which only exists in projects that downloaded a MetaHuman via Bridge.
+    target_skeleton = unreal.load_asset("/MetaHumanCharacter/Face/Face_Archetype_Skeleton")
+    if target_skeleton is None:
+        log("[person2meta] WARNING: Could not load Face_Archetype_Skeleton -- skipping export.")
+        return
+    export_settings.target_skeleton_or_skeletal_mesh = target_skeleton
+    export_settings.enable_head_movement = True
+    export_settings.export_range = unreal.PerformanceExportRange.PROCESSING_RANGE
+
+    anim_sequence = unreal.MetaHumanPerformanceExportUtils.export_animation_sequence(
+        performance_asset, export_settings
+    )
+    if anim_sequence is None:
+        log("[person2meta] WARNING: Failed to export animation sequence.")
+        return
+    log(f"[person2meta] Audio-driven animation complete -- {anim_sequence.get_path_name()} "
+        f"(apply it to the MetaHuman's Face skeletal mesh component to play it).")
+
+    export_synced_level_sequence(
+        metahuman_subsystem, character, anim_sequence, sound_wave, output_package_path, head_name
+    )
+
+
 def main():
     # -ExecutePythonScript auto-quits the editor one tick after this script
     # returns (EditorPythonExecuter.cpp: FExecuterTickable::Tick checks
@@ -522,6 +729,31 @@ def main():
         apply_synthesized_texture_override(
             metahuman_subsystem, character, asset_path, synthesized_texture_path
         )
+
+        log("[person2meta] Requesting auto-rig (joints + blendshapes for animation)...")
+        if not metahuman_subsystem.try_add_object_to_edit(character):
+            raise RuntimeError("Unable to edit asset for auto-rigging, is it already open for edit?")
+        try:
+            auto_rigging_request = unreal.MetaHumanCharacterAutoRiggingRequestParams()
+            auto_rigging_request.blocking = True  # required to run unattended, per example_auto_rig.py
+            auto_rigging_request.report_progress = False
+            # JOINTS_AND_BLENDSHAPES (not JOINTS_ONLY) so the face gets the
+            # blendshape controls actually needed to drive facial animation,
+            # not just a skeleton for body/head movement.
+            auto_rigging_request.rig_type = unreal.MetaHumanRigType.JOINTS_AND_BLEND_SHAPES
+            metahuman_subsystem.request_auto_rigging(character, auto_rigging_request)
+            unreal.EditorAssetLibrary.save_asset(asset_path, only_if_is_dirty=True)
+            log(f"[person2meta] Auto-rig complete -- saved {asset_path}")
+        finally:
+            if metahuman_subsystem.is_object_added_for_editing(character):
+                metahuman_subsystem.remove_object_to_edit(character)
+
+        audio_path = config.get("audio_path")
+        if audio_path:
+            run_audio_driven_animation(
+                metahuman_subsystem, character, audio_path,
+                import_destination_path, output_package_path, config["head_name"]
+            )
 
 
 if __name__ == "__main__":

@@ -24,3 +24,12 @@ venv/
 Thumbs.db
 .vscode/
 .idea/
+
+# --- person2meta runtime/local files (regenerated per machine/run) ---
+scripts/person2meta_settings.json
+scripts/person2meta_config.json
+scripts/person2meta_config_*.json
+scripts/blender_startup_log.txt
+scripts/blender_startup_status.json
+scripts/person2meta_icon_preview.png
+scripts/person2meta_icon_sizes.png
